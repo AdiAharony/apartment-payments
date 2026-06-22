@@ -9,6 +9,11 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [fullName, setFullName] = useState('')
   const [accountName, setAccountName] = useState('')
+  const [userId, setUserId] = useState('')
+  const [accountId, setAccountId] = useState('')
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     async function loadDashboard() {
@@ -40,6 +45,8 @@ export default function DashboardPage() {
         return
       }
 
+      setUserId(session.user.id)
+      setAccountId(user.account_id)
       setFullName(user.full_name)
       setAccountName(account.name)
       setLoading(false)
@@ -47,6 +54,26 @@ export default function DashboardPage() {
 
     loadDashboard()
   }, [router])
+
+  async function handleGenerateInvite() {
+    setGenerating(true)
+    const { data, error } = await supabase
+      .from('invitations')
+      .insert({ account_id: accountId, created_by: userId })
+      .select('token')
+      .single()
+    if (!error && data) {
+      setInviteUrl(`http://localhost:3000/invite/${data.token}`)
+    }
+    setGenerating(false)
+  }
+
+  async function handleCopy() {
+    if (!inviteUrl) return
+    await navigator.clipboard.writeText(inviteUrl)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
 
   async function handleSignOut() {
     await supabase.auth.signOut()
@@ -71,6 +98,38 @@ export default function DashboardPage() {
 
         <div className="border border-gray-200 rounded-lg p-4 text-center text-gray-500 text-sm">
           אין תשלומים פעילים כרגע
+        </div>
+
+        <div className="border border-gray-200 rounded-lg p-4 mt-4">
+          <h2 className="text-sm font-medium text-gray-700 mb-3">הזמנת דיירים</h2>
+          <button
+            type="button"
+            onClick={handleGenerateInvite}
+            disabled={generating}
+            className="w-full bg-blue-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+          >
+            {generating ? 'יוצר קישור...' : 'צור קישור הזמנה'}
+          </button>
+          {inviteUrl && (
+            <div className="mt-3">
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={inviteUrl}
+                  dir="ltr"
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-gray-50 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+                >
+                  {copied ? 'הועתק!' : 'העתק'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <button
