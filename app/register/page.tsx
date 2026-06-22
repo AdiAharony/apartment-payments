@@ -38,6 +38,7 @@ export default function RegisterPage() {
     const password = (form.elements.namedItem('password') as HTMLInputElement).value
     const apartmentName = buildApartmentName()
 
+    // 1. Create auth user
     const { data: authData, error: authError } = await supabase.auth.signUp({ email, password })
     if (authError || !authData.user) {
       setError(authError?.message ?? 'Registration failed')
@@ -45,22 +46,22 @@ export default function RegisterPage() {
       return
     }
 
-    const { data: account, error: accountError } = await supabase
-      .from('accounts')
-      .insert({ name: apartmentName })
-      .select()
-      .single()
-    if (accountError || !account) {
-      setError('Failed to create apartment account')
+    // 2. Sign in immediately to get a session before DB inserts
+    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
+    if (signInError) {
+      setError('נרשמת בהצלחה אך ההתחברות נכשלה. נסה להתחבר ידנית.')
       setLoading(false)
       return
     }
 
-    const { error: userError } = await supabase
-      .from('users')
-      .insert({ id: authData.user.id, account_id: account.id, full_name: fullName })
-    if (userError) {
-      setError('Failed to create user profile')
+    // 3. Create account + user via server route (uses service role key)
+    const res = await fetch('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: authData.user.id, apartmentName, fullName }),
+    })
+    if (!res.ok) {
+      setError('Failed to create apartment account')
       setLoading(false)
       return
     }
