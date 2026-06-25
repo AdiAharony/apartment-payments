@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { ImapFlow } from 'imapflow'
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -16,6 +15,7 @@ const SENDERS: Record<string, string> = {
 }
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
+  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs')
   const data = new Uint8Array(buffer)
   const doc = await pdfjsLib.getDocument({ data }).promise
   const pages = await Promise.all(
