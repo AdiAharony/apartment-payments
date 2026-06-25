@@ -205,9 +205,10 @@ export async function GET(req: NextRequest) {
     try {
       results[account.id] = await processAccount(account)
     } catch (err) {
+      const e = err as Error & { code?: string; responseCode?: number }
       results[account.id] = {
         processed: 0,
-        errors: [err instanceof Error ? err.message : String(err)],
+        errors: [`${e.message} | code: ${e.code} | response: ${e.responseCode} | stack: ${e.stack?.split('\n')[1]}`],
       }
     }
   }
