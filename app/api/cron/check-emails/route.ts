@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
-import { createClient } from '@supabase/supabase-js'
-import { ImapFlow } from 'imapflow'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -17,25 +16,86 @@ const SENDERS: Record<string, string> = {
   'invoice@amisragas.co.il': 'gas',
 }
 
-async function extractPdfText(buffer: Buffer): Promise<string> {
-  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs')
-  const data = new Uint8Array(buffer)
-  const doc = await pdfjsLib.getDocument({ data }).promise
-  const pages = await Promise.all(
-    Array.from({ length: doc.numPages }, (_, i) =>
-      doc.getPage(i + 1).then(page => page.getTextContent())
-    )
-  )
-  return pages
-    .flatMap(content => content.items)
-    .map(item => ('str' in item ? item.str ?? '' : ''))
-    .join(' ')
+// --- Gmail API helpers ---
+
+async function getAccessToken(refreshToken: string): Promise<string> {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  })
+  const data = await res.json()
+  if (!data.access_token) throw new Error(`Failed to get access token: ${JSON.stringify(data)}`)
+  return data.access_token
 }
+
+async function gmailGet(accessToken: string, path: string) {
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me${path}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return res.json()
+}
+
+async function gmailPost(accessToken: string, path: string, body: object) {
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return res.json()
+}
+
+function decodeBase64Url(data: string): Buffer {
+  const base64 = data.replace(/-/g, '+').replace(/_/g, '/')
+  return Buffer.from(base64, 'base64')
+}
+
+type GmailPart = {
+  mimeType: string
+  filename?: string
+  body?: { data?: string; attachmentId?: string }
+  parts?: GmailPart[]
+}
+
+function extractTextBody(part: GmailPart): string {
+  if (part.mimeType === 'text/plain' || part.mimeType === 'text/html') {
+    if (part.body?.data) return decodeBase64Url(part.body.data).toString('utf-8')
+  }
+  if (part.parts) {
+    for (const p of part.parts) {
+      const text = extractTextBody(p)
+      if (text) return text
+    }
+  }
+  return ''
+}
+
+function findPdfAttachment(part: GmailPart): { attachmentId: string } | null {
+  if (
+    (part.mimeType === 'application/pdf' || part.filename?.toLowerCase().endsWith('.pdf')) &&
+    part.body?.attachmentId
+  ) {
+    return { attachmentId: part.body.attachmentId }
+  }
+  if (part.parts) {
+    for (const p of part.parts) {
+      const found = findPdfAttachment(p)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+// --- Parsers ---
 
 function parseWater(body: string): { amount: number | null; due_date: string | null } {
   const amountMatch = body.match(/סה"כ לתשלום כולל מע"מ ([\d.]+) ₪/)
   const dueDateMatch = body.match(/תאריך אחרון לתשלום (\d{2}\.\d{2}\.\d{4})/)
-
   const amount = amountMatch ? parseFloat(amountMatch[1]) : null
   let due_date: string | null = null
   if (dueDateMatch) {
@@ -48,7 +108,6 @@ function parseWater(body: string): { amount: number | null; due_date: string | n
 function parseElectricity(text: string): { amount: number | null; due_date: string | null } {
   const amountMatch = text.match(/([\d,]+\.?\d*)\s+סה"כ לתשלום/)
   const dueDateMatch = text.match(/יש לשלם חשבון זה עד\s*\.\s*(\d{2}\/\d{2}\/\d{4})/)
-
   const amount = amountMatch ? parseFloat(amountMatch[1].replace(/,/g, '')) : null
   let due_date: string | null = null
   if (dueDateMatch) {
@@ -61,7 +120,6 @@ function parseElectricity(text: string): { amount: number | null; due_date: stri
 function parseGas(text: string): { amount: number | null; due_date: string | null } {
   const amountMatch = text.match(/(\d+\.\d+)\s*יתרה/)
   const dueDateMatch = text.match(/(\d{2}\/\d{2}\/\d{4})\s*\d{6}/)
-
   const amount = amountMatch ? parseFloat(amountMatch[1]) : null
   let due_date: string | null = null
   if (dueDateMatch) {
@@ -71,117 +129,93 @@ function parseGas(text: string): { amount: number | null; due_date: string | nul
   return { amount, due_date }
 }
 
-async function processAccount(account: {
-  id: string
-  email_imap_host: string
-  email_imap_port: number
-  email_user: string
-  email_password: string
-}): Promise<{ processed: number; errors: string[] }> {
-  const client = new ImapFlow({
-    host: account.email_imap_host,
-    port: account.email_imap_port,
-    secure: true,
-    auth: {
-      user: account.email_user,
-      pass: account.email_password,
-    },
-    logger: false,
-    socketTimeout: 30000,
-    connectionTimeout: 30000,
-    maxIdleTime: 30000,
-  })
+async function extractPdfText(buffer: Buffer): Promise<string> {
+  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  const data = new Uint8Array(buffer)
+  const doc = await pdfjsLib.getDocument({ data }).promise
+  const pages = await Promise.all(
+    Array.from({ length: doc.numPages }, (_, i) =>
+      doc.getPage(i + 1).then(page => page.getTextContent())
+    )
+  )
+  return pages
+    .flatMap(content => content.items)
+    .map(item => ('str' in item ? (item as { str: string }).str : ''))
+    .join(' ')
+}
+
+// --- Main account processor ---
+
+async function processAccount(accountId: string, refreshToken: string): Promise<{ processed: number; errors: string[] }> {
+  const accessToken = await getAccessToken(refreshToken)
+  const senderQuery = Object.keys(SENDERS).map(s => `from:${s}`).join(' OR ')
+
+  const searchResult = await gmailGet(accessToken, `/messages?q=${encodeURIComponent(senderQuery)}&maxResults=40`)
+  const messages: { id: string }[] = searchResult.messages ?? []
 
   let processed = 0
   const errors: string[] = []
 
-  await client.connect()
-
-  try {
-    const lock = await client.getMailboxLock('INBOX')
+  for (const { id } of messages) {
     try {
-      const senderAddresses = Object.keys(SENDERS)
-      let allSeqs: number[] = []
-      for (const sender of senderAddresses) {
-        const result = await client.search({ from: sender })
-        if (Array.isArray(result)) {
-          // Only take the last 10 per sender to keep it fast
-          allSeqs = allSeqs.concat(result.slice(-10))
-        }
-      }
-      if (!allSeqs.length) return { processed, errors }
-      const uniqueSeqs = [...new Set(allSeqs)]
-      for await (const message of client.fetch(uniqueSeqs, { envelope: true, bodyStructure: true, source: true })) {
-        const from = message.envelope?.from?.[0]?.address?.toLowerCase() ?? ''
-        const type = SENDERS[from]
-        if (!type) continue
+      const msg = await gmailGet(accessToken, `/messages/${id}?format=full`)
+      const fromHeader = (msg.payload?.headers ?? []).find((h: { name: string }) => h.name.toLowerCase() === 'from')?.value ?? ''
+      const fromAddress = (fromHeader.match(/<(.+?)>/) ?? [])[1]?.toLowerCase() ?? fromHeader.toLowerCase()
+      const type = SENDERS[fromAddress]
+      if (!type) continue
 
-        let amount: number | null = null
-        let due_date: string | null = null
+      // Dedup check
+      let amount: number | null = null
+      let due_date: string | null = null
 
-        try {
-          if (type === 'arnona') {
-            // No parseable amount
-          } else if (type === 'water') {
-            const body = message.source?.toString('utf-8') ?? ''
-            ;({ amount, due_date } = parseWater(body))
-          } else if (type === 'electricity' || type === 'gas') {
-            // Find PDF attachment
-            const parts = message.bodyStructure?.childNodes ?? []
-            for (const part of parts) {
-              if (part.type?.toLowerCase().includes('pdf') || part.disposition?.toLowerCase() === 'attachment') {
-                const partData = await client.download(String(message.seq), part.part, { uid: false })
-                const chunks: Buffer[] = []
-                for await (const chunk of partData.content) {
-                  chunks.push(chunk)
-                }
-                const pdfBuffer = Buffer.concat(chunks)
-                const text = await extractPdfText(pdfBuffer)
-                if (type === 'electricity') {
-                  ;({ amount, due_date } = parseElectricity(text))
-                } else {
-                  ;({ amount, due_date } = parseGas(text))
-                }
-                break
-              }
-            }
-          }
-
-          // Skip if payment with same type+due_date already exists
-          const dupQuery = supabase
-            .from('payments')
-            .select('id')
-            .eq('account_id', account.id)
-            .eq('type', type)
-          if (due_date) {
-            dupQuery.eq('due_date', due_date)
+      if (type === 'water') {
+        const body = extractTextBody(msg.payload)
+        ;({ amount, due_date } = parseWater(body))
+      } else if (type === 'electricity' || type === 'gas') {
+        const pdf = findPdfAttachment(msg.payload)
+        if (pdf) {
+          const attachmentData = await gmailGet(accessToken, `/messages/${id}/attachments/${pdf.attachmentId}`)
+          const buffer = decodeBase64Url(attachmentData.data)
+          const text = await extractPdfText(buffer)
+          if (type === 'electricity') {
+            ;({ amount, due_date } = parseElectricity(text))
           } else {
-            dupQuery.is('due_date', null)
+            ;({ amount, due_date } = parseGas(text))
           }
-          const { data: existing } = await dupQuery.maybeSingle()
-          if (existing) continue
-
-          await supabase.from('payments').insert({
-            account_id: account.id,
-            type,
-            amount,
-            due_date,
-            status: 'pending',
-            source: 'email',
-          })
-
-          // Mark as read
-          await client.messageFlagsAdd(String(message.seq), ['\\Seen'], { uid: false })
-          processed++
-        } catch (err) {
-          errors.push(`${type}: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
-    } finally {
-      lock.release()
+      // arnona: amount stays null
+
+      // Skip duplicates
+      const dupQuery = supabase
+        .from('payments')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('type', type)
+      if (due_date) {
+        dupQuery.eq('due_date', due_date)
+      } else {
+        dupQuery.is('due_date', null)
+      }
+      const { data: existing } = await dupQuery.maybeSingle()
+      if (existing) continue
+
+      await supabase.from('payments').insert({
+        account_id: accountId,
+        type,
+        amount,
+        due_date,
+        status: 'pending',
+        source: 'email',
+      })
+
+      // Mark as read
+      await gmailPost(accessToken, `/messages/${id}/modify`, { removeLabelIds: ['UNREAD'] })
+
+      processed++
+    } catch (err) {
+      errors.push(`${id}: ${err instanceof Error ? err.message : String(err)}`)
     }
-  } finally {
-    await client.logout()
   }
 
   return { processed, errors }
@@ -195,8 +229,8 @@ export async function GET(req: NextRequest) {
 
   const { data: accounts, error } = await supabase
     .from('accounts')
-    .select('id, email_imap_host, email_imap_port, email_user, email_password')
-    .not('email_user', 'is', null)
+    .select('id, gmail_refresh_token')
+    .not('gmail_refresh_token', 'is', null)
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
@@ -206,12 +240,11 @@ export async function GET(req: NextRequest) {
 
   for (const account of accounts ?? []) {
     try {
-      results[account.id] = await processAccount(account)
+      results[account.id] = await processAccount(account.id, account.gmail_refresh_token)
     } catch (err) {
-      const e = err as Error & { code?: string; responseCode?: number }
       results[account.id] = {
         processed: 0,
-        errors: [`${e.message} | code: ${e.code} | response: ${e.responseCode} | stack: ${e.stack?.split('\n')[1]}`],
+        errors: [err instanceof Error ? err.message : String(err)],
       }
     }
   }
