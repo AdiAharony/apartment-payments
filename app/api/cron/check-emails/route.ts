@@ -130,18 +130,9 @@ function parseGas(text: string): { amount: number | null; due_date: string | nul
 }
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
-  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs')
-  const data = new Uint8Array(buffer)
-  const doc = await pdfjsLib.getDocument({ data }).promise
-  const pages = await Promise.all(
-    Array.from({ length: doc.numPages }, (_, i) =>
-      doc.getPage(i + 1).then(page => page.getTextContent())
-    )
-  )
-  return pages
-    .flatMap(content => content.items)
-    .map(item => ('str' in item ? (item as { str: string }).str : ''))
-    .join(' ')
+  const pdfParse = (await import('pdf-parse')).default
+  const data = await pdfParse(buffer)
+  return data.text
 }
 
 // --- Main account processor ---
