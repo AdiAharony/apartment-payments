@@ -13,7 +13,7 @@ const PROVIDERS = [
     label: 'Gmail',
     host: 'imap.gmail.com',
     port: 993,
-    passwordGuide: 'Gmail דורש סיסמת אפליקציה (לא הסיסמה הרגילה שלך).',
+    passwordGuide: 'Gmail דורש סיסמת אפליקציה (לא הסיסמה הרגילה שלך). ניתן להדביק עם רווחים — המערכת תסיר אותם אוטומטית.',
     passwordSteps: [
       'היכנס לחשבון Google שלך',
       'עבור לאבטחה ← סיסמאות לאפליקציות',
@@ -152,7 +152,7 @@ export default function SettingsPage() {
 
     const { error: updateError } = await supabase
       .from('accounts')
-      .update({ email_imap_host: imapHost, email_imap_port: imapPort, email_user: emailUser, email_password: emailPassword })
+      .update({ email_imap_host: imapHost, email_imap_port: imapPort, email_user: emailUser.trim(), email_password: emailPassword.replace(/\s/g, '') })
       .eq('id', accountId)
 
     if (updateError) {
