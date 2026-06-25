@@ -200,7 +200,7 @@ async function processAccount(accountId: string, refreshToken: string): Promise<
       const { data: existing } = await dupQuery.maybeSingle()
       if (existing) continue
 
-      await supabase.from('payments').insert({
+      const { error: insertError } = await supabase.from('payments').insert({
         account_id: accountId,
         type,
         amount,
@@ -208,6 +208,11 @@ async function processAccount(accountId: string, refreshToken: string): Promise<
         status: 'pending',
         source: 'email',
       })
+
+      if (insertError) {
+        errors.push(`insert ${id}: ${insertError.message} (${insertError.code})`)
+        continue
+      }
 
       // Mark as read
       await gmailPost(accessToken, `/messages/${id}/modify`, { removeLabelIds: ['UNREAD'] })
