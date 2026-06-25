@@ -62,6 +62,41 @@ type GmailPart = {
   parts?: GmailPart[]
 }
 
+function extractHtmlBody(part: GmailPart): string {
+  if (part.mimeType === 'text/html') {
+    if (part.body?.data) {
+      const html = decodeBase64Url(part.body.data).toString('utf-8')
+      return html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ')
+    }
+  }
+  if (part.parts) {
+    for (const p of part.parts) {
+      const text = extractHtmlBody(p)
+      if (text) return text
+    }
+  }
+  return ''
+}
+
+async function extractPdfRaw(buffer: Buffer): Promise<string> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const PDFParser = ((await import('pdf2json')) as any).default ?? (await import('pdf2json'))
+  return new Promise((resolve) => {
+    const parser = new PDFParser()
+    parser.on('pdfParser_dataReady', (data: { Pages?: { Texts?: { R?: { T?: string }[] }[] }[] }) => {
+      const pages = data.Pages ?? []
+      const text = pages
+        .flatMap(p => p.Texts ?? [])
+        .flatMap(t => t.R ?? [])
+        .map(r => { try { return decodeURIComponent(r.T ?? '') } catch { return r.T ?? '' } })
+        .join(' ')
+      resolve(text || JSON.stringify(data).slice(0, 300))
+    })
+    parser.on('pdfParser_dataError', () => resolve('parse error'))
+    parser.parseBuffer(buffer)
+  })
+}
+
 function extractTextBody(part: GmailPart): string {
   if (part.mimeType === 'text/plain' || part.mimeType === 'text/html') {
     if (part.body?.data) return decodeBase64Url(part.body.data).toString('utf-8')
@@ -163,13 +198,16 @@ async function debugAccount(accountId: string, refreshToken: string) {
     seen.add(type)
 
     if (type === 'water') {
-      samples[type] = extractTextBody(msg.payload).slice(0, 500)
+      samples[`${type}_plain`] = extractTextBody(msg.payload).slice(0, 300)
+      samples[`${type}_html`] = extractHtmlBody(msg.payload).slice(0, 500)
     } else if (type === 'electricity' || type === 'gas') {
       const pdf = findPdfAttachment(msg.payload)
       if (pdf) {
         const att = await gmailGet(accessToken, `/messages/${id}/attachments/${pdf.attachmentId}`)
         const buffer = decodeBase64Url(att.data)
-        samples[type] = (await extractPdfText(buffer)).slice(0, 500)
+        samples[`${type}_pdf`] = (await extractPdfRaw(buffer)).slice(0, 800)
+      } else {
+        samples[type] = 'no PDF attachment found'
       }
     } else {
       samples[type] = '(no text needed)'
