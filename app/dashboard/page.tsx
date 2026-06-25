@@ -37,6 +37,7 @@ export default function DashboardPage() {
   const [generating, setGenerating] = useState(false)
   const [copied, setCopied] = useState(false)
   const [payments, setPayments] = useState<Payment[]>([])
+  const [history, setHistory] = useState<Payment[]>([])
   const [markingPaid, setMarkingPaid] = useState<string | null>(null)
   const [editingAmount, setEditingAmount] = useState<string | null>(null)
   const [amountInput, setAmountInput] = useState('')
@@ -84,7 +85,16 @@ export default function DashboardPage() {
         .eq('status', 'pending')
         .order('due_date', { ascending: true })
 
+      const { data: historyData } = await supabase
+        .from('payments')
+        .select('id, type, amount, due_date, status')
+        .eq('account_id', user.account_id)
+        .eq('status', 'paid')
+        .order('due_date', { ascending: false })
+        .limit(20)
+
       setPayments(paymentsData ?? [])
+      setHistory(historyData ?? [])
       setLoading(false)
     }
 
@@ -258,6 +268,34 @@ export default function DashboardPage() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* History */}
+        {history.length > 0 && (
+          <div className="mt-4">
+            <h2 className="text-sm font-medium text-gray-700 mb-3">היסטוריית תשלומים</h2>
+            <div className="flex flex-col gap-2">
+              {history.map(payment => (
+                <div key={payment.id} className="flex items-center justify-between border border-gray-100 rounded-lg px-4 py-3 bg-gray-50">
+                  <div className="flex items-center gap-2">
+                    <span>{PAYMENT_ICONS[payment.type] ?? '📄'}</span>
+                    <div>
+                      <p className="text-sm font-medium text-gray-700">{PAYMENT_LABELS[payment.type] ?? payment.type}</p>
+                      {payment.due_date && (
+                        <p className="text-xs text-gray-400">{formatDueDate(payment.due_date)}</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {payment.amount != null && (
+                      <span className="text-sm text-gray-600">₪{payment.amount.toLocaleString('he-IL')}</span>
+                    )}
+                    <span className="text-xs text-green-600 bg-green-50 border border-green-100 rounded-full px-2 py-0.5">שולם</span>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

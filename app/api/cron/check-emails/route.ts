@@ -84,6 +84,8 @@ async function processAccount(account: {
       pass: account.email_password,
     },
     logger: false,
+    socketTimeout: 10000,
+    connectionTimeout: 10000,
   })
 
   let processed = 0
@@ -98,7 +100,10 @@ async function processAccount(account: {
       let allSeqs: number[] = []
       for (const sender of senderAddresses) {
         const result = await client.search({ from: sender })
-        if (Array.isArray(result)) allSeqs = allSeqs.concat(result)
+        if (Array.isArray(result)) {
+          // Only take the last 10 per sender to keep it fast
+          allSeqs = allSeqs.concat(result.slice(-10))
+        }
       }
       if (!allSeqs.length) return { processed, errors }
       const uniqueSeqs = [...new Set(allSeqs)]
