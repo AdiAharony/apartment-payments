@@ -130,16 +130,18 @@ function parseGas(text: string): { amount: number | null; due_date: string | nul
 }
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
-  // Stub browser APIs that pdfjs-dist needs for rendering but not for text extraction
-  const g = globalThis as Record<string, unknown>
-  if (!g.DOMMatrix) g.DOMMatrix = class { constructor() {} }
-  if (!g.ImageData) g.ImageData = class { constructor() {} }
-  if (!g.Path2D)    g.Path2D    = class { constructor() {} }
-
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pdfParse = ((await import('pdf-parse')) as any).default ?? (await import('pdf-parse'))
-  const data = await pdfParse(buffer)
-  return data.text
+  const PDFParser = ((await import('pdf2json')) as any).default ?? (await import('pdf2json'))
+  return new Promise((resolve, reject) => {
+    const parser = new PDFParser()
+    parser.on('pdfParser_dataReady', () => {
+      resolve(parser.getRawTextContent())
+    })
+    parser.on('pdfParser_dataError', (err: { parserError: Error }) => {
+      reject(err.parserError)
+    })
+    parser.parseBuffer(buffer)
+  })
 }
 
 // --- Main account processor ---
