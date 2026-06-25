@@ -94,10 +94,15 @@ async function processAccount(account: {
   try {
     const lock = await client.getMailboxLock('INBOX')
     try {
-      const searchResult = await client.search({ seen: false })
-      const unseenSeqs = Array.isArray(searchResult) ? searchResult : []
-      if (!unseenSeqs.length) return { processed, errors }
-      for await (const message of client.fetch(unseenSeqs, { envelope: true, bodyStructure: true, source: true })) {
+      const senderAddresses = Object.keys(SENDERS)
+      let allSeqs: number[] = []
+      for (const sender of senderAddresses) {
+        const result = await client.search({ from: sender })
+        if (Array.isArray(result)) allSeqs = allSeqs.concat(result)
+      }
+      if (!allSeqs.length) return { processed, errors }
+      const uniqueSeqs = [...new Set(allSeqs)]
+      for await (const message of client.fetch(uniqueSeqs, { envelope: true, bodyStructure: true, source: true })) {
         const from = message.envelope?.from?.[0]?.address?.toLowerCase() ?? ''
         const type = SENDERS[from]
         if (!type) continue
@@ -132,6 +137,20 @@ async function processAccount(account: {
               }
             }
           }
+
+          // Skip if payment with same type+due_date already exists
+          const dupQuery = supabase
+            .from('payments')
+            .select('id')
+            .eq('account_id', account.id)
+            .eq('type', type)
+          if (due_date) {
+            dupQuery.eq('due_date', due_date)
+          } else {
+            dupQuery.is('due_date', null)
+          }
+          const { data: existing } = await dupQuery.maybeSingle()
+          if (existing) continue
 
           await supabase.from('payments').insert({
             account_id: account.id,
