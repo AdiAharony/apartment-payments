@@ -144,6 +144,40 @@ async function extractPdfText(buffer: Buffer): Promise<string> {
   })
 }
 
+// --- Debug: extract raw text from first email of each type ---
+
+async function debugAccount(accountId: string, refreshToken: string) {
+  const accessToken = await getAccessToken(refreshToken)
+  const senderQuery = Object.keys(SENDERS).map(s => `from:${s}`).join(' OR ')
+  const searchResult = await gmailGet(accessToken, `/messages?q=${encodeURIComponent(senderQuery)}&maxResults=8`)
+  const messages: { id: string }[] = searchResult.messages ?? []
+  const seen = new Set<string>()
+  const samples: Record<string, string> = {}
+
+  for (const { id } of messages) {
+    const msg = await gmailGet(accessToken, `/messages/${id}?format=full`)
+    const fromHeader = (msg.payload?.headers ?? []).find((h: { name: string }) => h.name.toLowerCase() === 'from')?.value ?? ''
+    const fromAddress = (fromHeader.match(/<(.+?)>/) ?? [])[1]?.toLowerCase() ?? fromHeader.toLowerCase()
+    const type = SENDERS[fromAddress]
+    if (!type || seen.has(type)) continue
+    seen.add(type)
+
+    if (type === 'water') {
+      samples[type] = extractTextBody(msg.payload).slice(0, 500)
+    } else if (type === 'electricity' || type === 'gas') {
+      const pdf = findPdfAttachment(msg.payload)
+      if (pdf) {
+        const att = await gmailGet(accessToken, `/messages/${id}/attachments/${pdf.attachmentId}`)
+        const buffer = decodeBase64Url(att.data)
+        samples[type] = (await extractPdfText(buffer)).slice(0, 500)
+      }
+    } else {
+      samples[type] = '(no text needed)'
+    }
+  }
+  return { debug: true, accountId, samples }
+}
+
 // --- Main account processor ---
 
 async function processAccount(accountId: string, refreshToken: string): Promise<{ processed: number; errors: string[] }> {
@@ -231,6 +265,7 @@ export async function GET(req: NextRequest) {
   if (secret !== process.env.CRON_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+  const debug = req.nextUrl.searchParams.get('debug') === '1'
 
   const { data: accounts, error } = await supabase
     .from('accounts')
@@ -241,11 +276,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  const results: Record<string, { processed: number; errors: string[] }> = {}
+  const results: Record<string, unknown> = {}
 
   for (const account of accounts ?? []) {
     try {
-      results[account.id] = await processAccount(account.id, account.gmail_refresh_token)
+      results[account.id] = debug
+        ? await debugAccount(account.id, account.gmail_refresh_token)
+        : await processAccount(account.id, account.gmail_refresh_token)
     } catch (err) {
       results[account.id] = {
         processed: 0,
