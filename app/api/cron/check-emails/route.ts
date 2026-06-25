@@ -141,8 +141,9 @@ function parseWater(body: string): { amount: number | null; due_date: string | n
 }
 
 function parseElectricity(text: string): { amount: number | null; due_date: string | null } {
-  const amountMatch = text.match(/([\d,]+\.?\d*)\s+סה"כ לתשלום/)
-  const dueDateMatch = text.match(/יש לשלם חשבון זה עד\s*\.\s*(\d{2}\/\d{2}\/\d{4})/)
+  // PDF text is reversed RTL — patterns reflect visual order
+  const amountMatch = text.match(/([\d,]+\.?\d*)\s+סה"כ לתשלום/) || text.match(/םולשתל\s+([\d,]+\.?\d*)/)
+  const dueDateMatch = text.match(/(\d{2}\/\d{2}\/\d{4})\s*-ל\s*עצובמ/) || text.match(/יש לשלם חשבון זה עד\s*\.?\s*(\d{2}\/\d{2}\/\d{4})/)
   const amount = amountMatch ? parseFloat(amountMatch[1].replace(/,/g, '')) : null
   let due_date: string | null = null
   if (dueDateMatch) {
@@ -205,7 +206,7 @@ async function debugAccount(accountId: string, refreshToken: string) {
       if (pdf) {
         const att = await gmailGet(accessToken, `/messages/${id}/attachments/${pdf.attachmentId}`)
         const buffer = decodeBase64Url(att.data)
-        samples[`${type}_pdf`] = (await extractPdfRaw(buffer)).slice(0, 800)
+        samples[`${type}_pdf`] = (await extractPdfRaw(buffer)).slice(0, 3000)
       } else {
         samples[type] = 'no PDF attachment found'
       }
@@ -241,7 +242,7 @@ async function processAccount(accountId: string, refreshToken: string): Promise<
       let due_date: string | null = null
 
       if (type === 'water') {
-        const body = extractTextBody(msg.payload)
+        const body = extractHtmlBody(msg.payload)
         ;({ amount, due_date } = parseWater(body))
       } else if (type === 'electricity' || type === 'gas') {
         const pdf = findPdfAttachment(msg.payload)
