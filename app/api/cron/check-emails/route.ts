@@ -84,8 +84,9 @@ async function processAccount(account: {
       pass: account.email_password,
     },
     logger: false,
-    socketTimeout: 10000,
-    connectionTimeout: 10000,
+    socketTimeout: 30000,
+    connectionTimeout: 30000,
+    maxIdleTime: 30000,
   })
 
   let processed = 0
