@@ -25,7 +25,7 @@ async function extractPdfText(buffer: Buffer): Promise<string> {
   )
   return pages
     .flatMap(content => content.items)
-    .map((item: { str?: string }) => item.str ?? '')
+    .map(item => ('str' in item ? item.str ?? '' : ''))
     .join(' ')
 }
 
@@ -94,8 +94,11 @@ async function processAccount(account: {
   try {
     const lock = await client.getMailboxLock('INBOX')
     try {
-      for await (const message of client.fetch({ unseen: true }, { envelope: true, bodyStructure: true, source: true })) {
-        const from = message.envelope.from?.[0]?.address?.toLowerCase() ?? ''
+      const searchResult = await client.search({ seen: false })
+      const unseenSeqs = Array.isArray(searchResult) ? searchResult : []
+      if (!unseenSeqs.length) return { processed, errors }
+      for await (const message of client.fetch(unseenSeqs, { envelope: true, bodyStructure: true, source: true })) {
+        const from = message.envelope?.from?.[0]?.address?.toLowerCase() ?? ''
         const type = SENDERS[from]
         if (!type) continue
 
@@ -106,7 +109,7 @@ async function processAccount(account: {
           if (type === 'arnona') {
             // No parseable amount
           } else if (type === 'water') {
-            const body = message.source.toString('utf-8')
+            const body = message.source?.toString('utf-8') ?? ''
             ;({ amount, due_date } = parseWater(body))
           } else if (type === 'electricity' || type === 'gas') {
             // Find PDF attachment
