@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/check-emails?secret=apartment123",
-      "schedule": "0 * * * *"
+      "schedule": "0 8 * * *"
     }
   ]
 }
